@@ -1,0 +1,7 @@
+/error_log_*.log
+/.env
+/NEC2023.txt
+/NEC2023_QA.csv
+/NEC2023_QA_Updated.csv
+/NFPA_70_NEC_2023.pdf
+/rejects.txt
