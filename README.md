@@ -44,7 +44,9 @@ The Q&A Verification script is an advanced tool for processing large datasets of
 ### Environment Setup
 
 1. **Clone the Repository:**
-   - Download or clone the repository containing the scripts.
+   ```bash
+   git clone https://github.com/Scionero/PDF2QAS.git
+   ```
 
 2. **Environment File:**
    - Copy the `example.env` file to a new file named `.env`.
