@@ -3,7 +3,8 @@
 
 ## Overview
 
-This document provides a guide for two Python scripts: one for processing PDF documents into question-answer pairs (Q&A script), and another for cropping PDF pages into columns and extracting text using Optical Character Recognition (OCR) (PDF Processing script).
+This document provides a guide for two Python scripts: one for cropping PDF pages into columns and extracting text using Optical Character Recognition (OCR) (PDF Processing script)
+and another for processing text into question-answer pairs (Q&A script).
 
 ### PDF Processing Script
 
