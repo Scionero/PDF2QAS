@@ -6,10 +6,11 @@ from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
 import fireworks.client
-from fireworks.client.error import RateLimitError
+from fireworks.client.error import (RateLimitError, PermissionError, InvalidRequestError, AuthenticationError,
+                                    InternalServerError, ServiceUnavailableError)
 import asyncio
 import logging
-
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -29,6 +30,12 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelnam
 
 # Add the file handler to the root logger
 logging.getLogger('').addHandler(file_handler)
+
+
+class Result(BaseModel):
+    question: str
+    answer: str
+    changed: str
 
 
 async def verify_qa_async(query, system_content):
@@ -53,6 +60,7 @@ async def verify_qa_async(query, system_content):
     try:
         response = await fireworks.client.chat.ChatCompletionV2.acreate(
             model="accounts/fireworks/models/mixtral-8x7b-instruct",
+            response_format={"type": "json_object", "schema": json.dumps(Result.model_json_schema())},
             messages=messages,
             temperature=0.0,
             frequency_penalty=1.1,
@@ -68,42 +76,23 @@ async def verify_qa_async(query, system_content):
         await asyncio.sleep(5)
     except Exception as e:
         logging.error(f"Error: {e}")
+        user_input = input("User intervention is needed. Fix the issue and enter 'continue' to continue. If you "
+                           "would like to exit, enter 'exit'.").lower()
+        if user_input == "exit":
+            raise SystemExit
 
 
 def parse_json_response_to_df(json_response):
-    """
-    Parse the JSON response from the AI model to a DataFrame.
-
-    :param: json_response: The JSON response from the AI model.
-
-    :return: A DataFrame containing the question, answer, and the changed field.
-    """
     try:
-        questions = []
-        answers = []
-        changes = []
+        # Convert the JSON string to a Python dictionary
+        data_dict = json.loads(json_response)
 
-        lines = json_response.split("\n")
-
-        for i, line in enumerate(lines):
-            if '"question":' in line:
-                question = line.split('"question":', 1)[1].strip(' ",')
-
-                for j in range(i + 1, len(lines)):
-                    if '"answer":' in lines[j]:
-                        answer = lines[j].split('"answer":', 1)[1].strip(' ",')
-
-                        for k in range(j + 1, len(lines)):
-                            if '"changed":' in lines[k]:
-                                changed = lines[k].split('"changed":', 1)[1].strip(' ",')
-
-                                changes.append(changed)
-
-                            # Add to lists
-                            answers.append(answer)
-                            questions.append(question)
-                            break
-        return pd.DataFrame({"question": questions, "answer": answers, "changed": changes})
+        # Wrap the dictionary in a list and create a DataFrame
+        df = pd.DataFrame([data_dict])
+        return df
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON Decode Error: {e}")
+        return pd.DataFrame(columns=["question", "answer", "changed"])
     except Exception as e:
         logging.error(f"Error parsing response: {e}")
         return pd.DataFrame(columns=["question", "answer", "changed"])
@@ -198,10 +187,11 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     prompt_token_price = 0.0000004
     completion_token_price = 0.0000016
     costs_per_row = []
+    cost_so_far = 0
 
     # Open the output file in write mode
-    with open(output_path, mode='w', newline='', encoding='utf-8') as file, open(reject_file, mode='a',
-                                                                                 encoding='utf-8') as reject_file:
+    with (open(output_path, mode='w', newline='', encoding='utf-8') as file, open(reject_file, mode='a',
+                                                                                     encoding='utf-8') as reject_file):
         writer = csv.writer(file)
         # Write the header
         writer.writerow(['question', 'answer', 'changed'])
@@ -210,7 +200,6 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
             question = row["question"]
             answer = row["answer"]
             retries = 0
-            errors = []
             response = ""
             new_question = question
             new_answer = answer
@@ -220,6 +209,7 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
                 try:
                     response, usage = await verify_qa_async(f"Question: {question} \nAnswer: {answer}", system_content)
                     logging.info(f"Processing row {index}....")
+                    # print(response)
 
                     # Parse the response and extract updated question and answer
                     response_df = parse_json_response_to_df(response)
@@ -253,8 +243,7 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
             if retries == max_retries:
                 error_message = f"Max retries reached while processing row {index}."
                 logging.error(error_message)
-                errors.append(error_message)
-
+                errors = [error_message]
                 # Writing the failed entry to the rejects file
                 reject_file.write(f"Original Question: {question}\n")
                 reject_file.write(f"Original Answer: {answer}\n")
@@ -275,9 +264,9 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
 
             formatted_time_remaining = format_seconds_to_hms(estimated_time_remaining)
 
-            average_cost_per_row = sum(costs_per_row) / len(costs_per_row) if costs_per_row else 0
+            average_cost_per_row = sum(costs_per_row) / len(costs_per_row)
             estimated_total_cost = average_cost_per_row * total_rows
-            cost_so_far = completion_token_price * total_completion_tokens + prompt_token_price * total_prompt_tokens
+            cost_so_far += cost_for_row
 
             logging.info(f"Processed row {index}/{total_rows}. Estimated time remaining: {formatted_time_remaining}.")
             logging.info(f"Cost so far (May not be exact): ${cost_so_far:.4f}")
@@ -292,7 +281,7 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
 
 
 if __name__ == '__main__':
-    csv_path = "csv.csv"  # Replace with your CSV file path
-    output_path = 'csv_updated.csv'  # Replace with your output CSV file path
+    csv_path = "NEC2023_QA.csv"  # Replace with your CSV file path
+    output_path = 'NEC2023_QA_Updated.csv'  # Replace with your output CSV file path
     jsonl_file_path = 'qas.jsonl'  # Replace with your JSONL file path
     asyncio.run(process_and_verify_pairs(csv_path, output_path, jsonl_file_path))
