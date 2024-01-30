@@ -238,7 +238,7 @@ def check_error_threshold_and_exit(log_file, threshold=100):
     """
     if count_errors_in_log(log_file) > threshold:
         logging.error("Error threshold exceeded. Exiting script.")
-        exit(1)
+        raise SystemExit
 
 
 @token_time_calculator
@@ -286,6 +286,22 @@ async def reject_handler(answer, index, question, reject_file, response):
     reject_file.write("-----\n\n")  # Delimiter for easy reading
 
 
+def determine_last_row(output_csv_path):
+    """
+    Determines the last row number in an existing CSV file.
+
+    :param output_csv_path: Path to the CSV file.
+    :return: The index of the last row, or 0 if the file doesn't exist or is empty.
+    """
+    try:
+        with open(output_csv_path, 'r', newline='', encoding='utf-8') as file:
+            reader = csv.reader(file)
+            row_count = sum(1 for row in reader)
+            return row_count  # Returns the number of rows
+    except FileNotFoundError:
+        return 0  # File does not exist, start from the beginning
+
+
 async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     """
     Main function to process a CSV file containing question/answer pairs, verify them using an AI model, and save the updated pairs to a new CSV file.
@@ -303,10 +319,8 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     :return: None
     """
 
-    # Check and delete output files if they exist
-    for file_path in [output_path, jsonl_file_path, "rejects.txt"]:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    if os.path.exists(jsonl_file_path):
+        os.remove(jsonl_file_path)
 
     system_content = """You are the assistant to a professor who is tasked with creating question/answer pairs from 
                             a given text. 
@@ -341,21 +355,28 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     costs_per_row = []
     cost_so_far = 0
 
+    start_row_index = determine_last_row(output_path) + 1
+
     # Open the output file in write mode
-    with (open(output_path, mode='w', newline='', encoding='utf-8') as file, open(reject_file, mode='a',
+    with (open(output_path, mode='a', newline='', encoding='utf-8') as file, open(reject_file, mode='a',
                                                                                      encoding='utf-8') as reject_file):
         writer = csv.writer(file)
-        # Write the header
-        writer.writerow(['question', 'answer', 'changed'])
 
-        for index, (idx, row) in enumerate(df.iterrows(), start=1):
-            question = row["question"]
-            answer = row["answer"]
+        # Write the header if the file is new or empty
+        if start_row_index == 0:
+            writer.writerow(['question', 'answer', 'changed'])
+
+        for index, row in enumerate(df.iterrows(), start=1):
+            if index < start_row_index:
+                continue  # Skip rows that have already been processed
+
+            question = row[1]["question"]  # row is a tuple with (index, data), so row[1] is the data
+            answer = row[1]["answer"]
 
             try:
                 response, response_df, usage, cost_for_row, formatted_time, tokens = (
-                    await process_qa_pair_with_retries(question, answer, system_content, max_retries
-                    ))
+                    await process_qa_pair_with_retries(question, answer, system_content, max_retries)
+                )
 
                 # Extract and write updated row to CSV
                 new_question = response_df.iloc[0]["question"]
