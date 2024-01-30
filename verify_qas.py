@@ -59,15 +59,19 @@ class MaxRetriesExceededError(Exception):
 async def verify_qa_async(query, system_content):
     """
     Asynchronously verifies a question-answer pair using a chat completion model.
+    Implements a 'pause' and email mechanism in the exception handling.
+    For instance, if the user runs out of credits on Fireworks' service, the
+    program will email the user and pause the script.
+    This allows the user to top up their credit balance and resume the script.
 
-    :param: query: The user's question.
-    :param: system_content: The system's response.
+    :param: query: The question/answer pair to be verified.
+    :param: system_content: The system's prompt.
 
     :return: The generated answer.
-    :return: The total tokens used for this query.
+    :return: The number of tokens used for this query.
 
     :raises: RateLimitError: If the rate limit is exceeded.
-    :raises:Exception: If an error occurs during the verification process.
+    :raises: Exception: If an error occurs during the verification process.
     """
 
     messages = [
@@ -92,9 +96,6 @@ async def verify_qa_async(query, system_content):
     except RateLimitError as rate_limit_error:
         logging.error(f"Rate limit error: {rate_limit_error}")
         await asyncio.sleep(5)
-    except ServiceUnavailableError as service_unavailable_error:
-        logging.error(f"Service unavailable error: {service_unavailable_error}")
-        await asyncio.sleep(5)
     except Exception as e:
         logging.error(f"Error: {e}")
         send_email("An error has occurred that stopped the script from running. User intervention is required before "
@@ -106,6 +107,15 @@ async def verify_qa_async(query, system_content):
 
 
 def parse_json_response_to_df(json_response):
+    """
+    Converts a JSON response to a pandas DataFrame.
+
+    :param: json_response: The JSON response to be parsed.
+    :return: pd.DataFrame: The parsed response as a DataFrame.
+
+    :raises: json.JSONDecodeError: If the JSON response is not valid.
+    :raises: Exception: If an error occurs during parsing.
+    """
     try:
         # Convert the JSON string to a Python dictionary
         data_dict = json.loads(json_response)
@@ -125,7 +135,7 @@ def csv_to_jsonl(csv_file_path, jsonl_file_path):
     """
     Convert a CSV file to a JSONL file.
 
-    :param: csv_file_path: The path to the CSV file.
+    :param: csv_file_path: The path to the updated CSV file.
     :param: jsonl_file_path: The path to the JSONL file.
 
     :return: None
@@ -156,6 +166,18 @@ def format_seconds_to_hms(seconds):
 
 
 def send_email(subject, body, attachment_path=None):
+    """
+    Sends an email message through an SMTP server.
+    The message can include a text body and an optional file attachment.
+    Requires an email address and app password set as environment variables.
+    Logs any errors that occur.
+
+    :param: subject: The subject line of the email.
+    :param: body: The body text of the email.
+    :param: attachment_path: Optional path to a file attachment.
+
+    :raises Exception: If an error occurs while sending the email.
+    """
     try:
         # Set up the email server
         server = smtplib.SMTP('smtp.gmail.com', 587)
@@ -209,6 +231,12 @@ def count_errors_in_log(log_file):
 
 
 def token_time_calculator(func):
+    """
+    A decorator that calculates the time taken to run a function. The time is calculated in seconds.
+
+    :param func: The function to be timed.
+    :return: The function with the decorator applied.
+    """
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -243,6 +271,25 @@ def check_error_threshold_and_exit(log_file, threshold=100):
 
 @token_time_calculator
 async def process_qa_pair_with_retries(question, answer, system_content, max_retries=3):
+    """
+    Calls verify_qa_async to process the QA pair. Retries on errors up to
+    max_retries times. Modifies the system prompt on retries. Returns the
+    response, usage stats, cost, time taken, and total tokens.
+
+    :param: question: The question text.
+    :param: answer: The answer text.
+    :param: system_content: The system prompt.
+    :param: max_retries: Maximum number of retries.
+
+    :return: response: The AI response JSON object.
+    :return: response_df: The AI response DataFrame.
+    :return: usage: The usage JSON object.
+    :return: cost_for_row: The cost for the row.
+    :return: formatted_time: The time taken to process the row.
+    :return: tokens: The number of tokens used.
+
+    :raises: MaxRetriesExceededError: If the maximum number of retries is exceeded.
+    """
     retries = 0
     while retries < max_retries:
         try:
@@ -272,6 +319,18 @@ async def process_qa_pair_with_retries(question, answer, system_content, max_ret
 
 
 async def reject_handler(answer, index, question, reject_file, response):
+    """
+    Handles the rejection of a QA pair. Writes the QA pair to a rejects file,
+    along with other details.
+
+    :param: answer: The answer text.
+    :param: index: The row number.
+    :param: question: The question text.
+    :param: reject_file: The rejects file.
+    :param: response: The AI response JSON object.
+
+    :return: None
+    """
     error_message = f"Max retries reached while processing row {index}."
     logging.error(error_message)
     check_error_threshold_and_exit(log_filename)
@@ -290,7 +349,7 @@ def determine_last_row(output_csv_path):
     """
     Determines the last row number in an existing CSV file.
 
-    :param output_csv_path: Path to the CSV file.
+    :param: output_csv_path: Path to the CSV file.
     :return: The index of the last row, or 0 if the file doesn't exist or is empty.
     """
     try:
@@ -304,21 +363,18 @@ def determine_last_row(output_csv_path):
 
 async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     """
-    Main function to process a CSV file containing question/answer pairs, verify them using an AI model, and save the updated pairs to a new CSV file.
+    Reads the input CSV and calls process_qa_pair_with_retries to verify each pair.
+    Handles retries and errors. Writes each updated pair to the output CSV file.
+    Tracks time, cost estimate, and usage statistics.
+    Sends an email with results and error log when finished.
+    Converts the updated CSV to JSONL format.
 
-    The function reads a CSV file containing question/answer pairs, and for each pair:
-    - Verifies the pair by calling the `verify_qa` function with the question and answer.
-    - Parses the JSON response to extract the updated question, answer, and changes.
-    - Writes the updated pair to a new CSV file.
-    - If there are parsing errors or the maximum number of retries is reached, the pair is written to a rejects file.
-
-    :param: csv_path: The path to the CSV file containing question/answer pairs.
-    :param: output_path: The path to the new CSV file containing the updated question/answer pairs.
-    :param: jsonl_file_path: The path to the JSONL file containing the original question/answer pairs.
+    :param: csv_path: Path to the CSV file.
+    :param: output_path: Path to the output CSV file.
+    :param: jsonl_file_path: Path to the JSONL file.
 
     :return: None
     """
-
     if os.path.exists(jsonl_file_path):
         os.remove(jsonl_file_path)
 
@@ -355,7 +411,12 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
     costs_per_row = []
     cost_so_far = 0
 
-    start_row_index = determine_last_row(output_path) + 1
+    start_row_index = determine_last_row(output_path)
+    if start_row_index > 0:
+        start_row_index -= 1  # Run the previous row again to prevent improper entries
+
+    # Check if the file is new or empty
+    file_exists = os.path.exists(output_path) and os.path.getsize(output_path) > 0
 
     # Open the output file in write mode
     with (open(output_path, mode='a', newline='', encoding='utf-8') as file, open(reject_file, mode='a',
@@ -363,11 +424,11 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
         writer = csv.writer(file)
 
         # Write the header if the file is new or empty
-        if start_row_index == 0:
+        if not file_exists:
             writer.writerow(['question', 'answer', 'changed'])
 
         for index, row in enumerate(df.iterrows(), start=1):
-            if index < start_row_index:
+            if index <= start_row_index:
                 continue  # Skip rows that have already been processed
 
             question = row[1]["question"]  # row is a tuple with (index, data), so row[1] is the data
@@ -392,9 +453,6 @@ async def process_and_verify_pairs(csv_path, output_path, jsonl_file_path):
 
             except MaxRetriesExceededError as max_retries_error:
                 await reject_handler(answer, index, question, reject_file, response)
-
-            # Write the updated row to the CSV file
-            writer.writerow([new_question, new_answer, changed])
 
             iteration_end = time.time()
             total_time_taken = iteration_end - start_time
