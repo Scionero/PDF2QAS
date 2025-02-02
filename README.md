@@ -50,11 +50,7 @@ The Q&A Verification script is an advanced tool for processing large datasets of
    ```
 
 2. **Environment File:**
-   - Copy the `example.env` file to a new file named `.env`.
-   ```bash
-   cp example.env .env
-   ```
-   - Edit the `.env` file to include your specific API keys and other environment variables.
+   - Create and edit an `.env` file to include your specific API keys and other environment variables.
 
 3. **Python Environment:**
    - Create a new virtual environment using Conda:
